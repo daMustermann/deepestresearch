@@ -29,6 +29,31 @@ class Configuration(BaseModel):
         },
     )
 
+    search_api_provider: str = Field(
+        default="google",
+        metadata={"description": "The search API provider to use (e.g., 'google', 'searxng')."},
+    )
+    search_api_key: Optional[str] = Field(
+        default=None, metadata={"description": "The API key for the search provider."}
+    )
+    searxng_base_url: Optional[str] = Field(
+        default=None, metadata={"description": "The base URL for SearXNG instances."}
+    )
+
+    llm_provider: str = Field(
+        default="google",
+        metadata={"description": "The LLM provider to use (e.g., 'google', 'openai')."},
+    )
+    llm_api_base_url: Optional[str] = Field(
+        default=None, metadata={"description": "The base URL for custom LLM APIs."}
+    )
+    llm_api_key: Optional[str] = Field(
+        default=None, metadata={"description": "The API key for the LLM provider."}
+    )
+    llm_model_name: Optional[str] = Field(
+        default=None, metadata={"description": "The specific model name for custom LLMs."}
+    )
+
     number_of_initial_queries: int = Field(
         default=3,
         metadata={"description": "The number of initial search queries to generate."},
@@ -49,12 +74,22 @@ class Configuration(BaseModel):
         )
 
         # Get raw values from environment or config
-        raw_values: dict[str, Any] = {
-            name: os.environ.get(name.upper(), configurable.get(name))
-            for name in cls.model_fields.keys()
-        }
+        raw_values: dict[str, Any] = {}
+        for name in cls.model_fields.keys():
+            env_var_name = name.upper()
+            value = os.environ.get(env_var_name, configurable.get(name))
+            raw_values[name] = value
 
-        # Filter out None values
-        values = {k: v for k, v in raw_values.items() if v is not None}
+        # Filter out None values, unless the field is explicitly Optional
+        values = {}
+        for k, v in raw_values.items():
+            if v is not None:
+                values[k] = v
+            # For optional fields, we still want to include them if they are explicitly set to None
+            # or if they are not present in the environment/config (which results in v being None)
+            # and the field definition allows None.
+            elif cls.model_fields[k].is_required() is False:
+                values[k] = None
+
 
         return cls(**values)

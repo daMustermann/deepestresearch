@@ -4,6 +4,9 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { ProcessedEvent } from "@/components/ActivityTimeline";
 import { WelcomeScreen } from "@/components/WelcomeScreen";
 import { ChatMessagesView } from "@/components/ChatMessagesView";
+import SettingsDialog from "@/components/SettingsDialog"; // Import SettingsDialog
+import { Button } from "@/components/ui/button"; // Import Button
+import { Cog } from "lucide-react"; // Import an icon for the button
 
 export default function App() {
   const [processedEventsTimeline, setProcessedEventsTimeline] = useState<
@@ -12,6 +15,7 @@ export default function App() {
   const [historicalActivities, setHistoricalActivities] = useState<
     Record<string, ProcessedEvent[]>
   >({});
+  const [isSettingsDialogOpen, setIsSettingsDialogOpen] = useState(false); // State for dialog visibility
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const hasFinalizeEventOccurredRef = useRef(false);
 
@@ -20,6 +24,8 @@ export default function App() {
     initial_search_query_count: number;
     max_research_loops: number;
     reasoning_model: string;
+    // Add configurable to the type definition for useStream
+    configurable?: Record<string, any>;
   }>({
     apiUrl: import.meta.env.DEV
       ? "http://localhost:2024"
@@ -137,11 +143,43 @@ export default function App() {
           id: Date.now().toString(),
         },
       ];
+
+      // Retrieve and map settings for the backend
+      const configurable: Record<string, any> = {};
+      const settingsString = localStorage.getItem('appSettings');
+      if (settingsString) {
+        try {
+          const parsedSettings = JSON.parse(settingsString);
+
+          const assignIfDefined = (targetKey: string, value: any) => {
+            // Ensure that we only pass the value if it's not empty, null, or undefined.
+            // For boolean false, it should still be passed if that's a valid setting.
+            // For this use case, empty strings are treated as "not set".
+            if (value !== undefined && value !== null && value !== '') {
+              configurable[targetKey] = value;
+            }
+          };
+
+          assignIfDefined('search_api_provider', parsedSettings.searchApiProvider);
+          assignIfDefined('search_api_key', parsedSettings.searchApiKey);
+          assignIfDefined('searxng_base_url', parsedSettings.searxngBaseUrl);
+          assignIfDefined('llm_provider', parsedSettings.llmProvider);
+          assignIfDefined('llm_api_base_url', parsedSettings.llmApiBaseUrl);
+          assignIfDefined('llm_api_key', parsedSettings.llmApiKey);
+          assignIfDefined('llm_model_name', parsedSettings.llmModelName);
+
+        } catch (e) {
+          console.error("Error parsing appSettings from localStorage", e);
+          // Proceed with empty configurable or default if error
+        }
+      }
+
       thread.submit({
         messages: newMessages,
         initial_search_query_count: initial_search_query_count,
         max_research_loops: max_research_loops,
-        reasoning_model: model,
+        reasoning_model: model, // This will be overridden by llm_model_name if llm_provider is custom/openai
+        configurable: configurable,
       });
     },
     [thread]
@@ -155,6 +193,19 @@ export default function App() {
   return (
     <div className="flex h-screen bg-neutral-800 text-neutral-100 font-sans antialiased">
       <main className="flex-1 flex flex-col overflow-hidden max-w-4xl mx-auto w-full">
+        {/* Header with Settings Button */}
+        <header className="p-4 flex justify-between items-center border-b border-neutral-700">
+          <h1 className="text-xl font-semibold">Pro Search Agent</h1>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => setIsSettingsDialogOpen(true)}
+            aria-label="Open Settings"
+          >
+            <Cog className="h-5 w-5" />
+          </Button>
+        </header>
+
         <div
           className={`flex-1 overflow-y-auto ${
             thread.messages.length === 0 ? "flex" : ""
@@ -179,6 +230,10 @@ export default function App() {
           )}
         </div>
       </main>
+      <SettingsDialog
+        isOpen={isSettingsDialogOpen}
+        onClose={() => setIsSettingsDialogOpen(false)}
+      />
     </div>
   );
 }
