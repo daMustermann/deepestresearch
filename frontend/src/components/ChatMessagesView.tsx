@@ -1,23 +1,25 @@
 import type React from "react";
 import type { Message } from "@langchain/langgraph-sdk";
-import { ScrollArea } from "@/components/ui/scroll-area";
+import { ScrollArea } from "./ui/scroll-area";
 import { Loader2, Copy, CopyCheck } from "lucide-react";
-import { InputForm } from "@/components/InputForm";
-import { Button } from "@/components/ui/button";
+import { InputForm } from "./InputForm";
+import { Button } from "./ui/button";
 import { useState, ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
-import { cn } from "@/lib/utils";
-import { Badge } from "@/components/ui/badge";
+import { cn } from "../lib/utils";
+import { Badge } from "./ui/badge";
 import {
   ActivityTimeline,
   ProcessedEvent,
-} from "@/components/ActivityTimeline"; // Assuming ActivityTimeline is in the same dir or adjust path
+} from "./ActivityTimeline"; // Assuming ActivityTimeline is in the same dir or adjust path
 
 // Markdown component props type from former ReportView
 type MdComponentProps = {
   className?: string;
   children?: ReactNode;
-  [key: string]: any;
+  href?: string; // Explicitly for the <a> tag
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  [key: string]: any; // Using any to align with react-markdown's flexibility and fix spread/assignability issues
 };
 
 // Markdown components (from former ReportView.tsx)

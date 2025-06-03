@@ -3,10 +3,38 @@ import pathlib
 from fastapi import FastAPI, Request, Response
 from fastapi.staticfiles import StaticFiles
 import fastapi.exceptions
+from fastapi.middleware.cors import CORSMiddleware
 
-# Define the FastAPI app
-app = FastAPI()
+# Define the FastAPI app for agent-specific routes
+agent_fastapi_app = FastAPI(
+    title="Deepest Research Agent API",
+    version="0.1.0",
+    # The comment below advised against adding CORS here,
+    # but it's necessary for the dev server to allow frontend requests.
+    # Füge hier ggf. weitere FastAPI-Parameter hinzu, aber KEINE CORS-Middleware
+)
 
+# Define allowed origins for CORS
+origins = [
+    "http://localhost:5173",  # React frontend development server
+    "http://127.0.0.1:5173", # Also common for localhost
+]
+
+# Add CORS middleware
+agent_fastapi_app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ... (Definition deiner Routen für agent_fastapi_app, falls vorhanden) ...
+# agent_fastapi_app.include_router(...)
+
+# Stelle sicher, dass die Variable 'app' auf deine FastAPI-Instanz zeigt,
+# damit langgraph dev sie finden kann.
+app = agent_fastapi_app
 
 def create_frontend_router(build_dir="../frontend/dist"):
     """Creates a router to serve the React frontend.

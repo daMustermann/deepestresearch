@@ -3,8 +3,8 @@ import {
   CardContent,
   CardDescription,
   CardHeader,
-} from "@/components/ui/card";
-import { ScrollArea } from "@/components/ui/scroll-area";
+} from "./ui/card";
+import { ScrollArea } from "./ui/scroll-area";
 import {
   Loader2,
   Activity,
@@ -20,7 +20,7 @@ import { useEffect, useState } from "react";
 
 export interface ProcessedEvent {
   title: string;
-  data: any;
+  data: string | string[] | Record<string, unknown> | unknown[];
 }
 
 interface ActivityTimelineProps {

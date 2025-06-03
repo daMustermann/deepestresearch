@@ -1,14 +1,14 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
+import { Button } from './ui/button';
+import { Input } from './ui/input';
+import { Label } from './ui/label.tsx'; // Added .tsx extension
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from '@/components/ui/select';
+} from './ui/select';
 import {
   Card,
   CardContent,
@@ -16,7 +16,7 @@ import {
   CardFooter,
   CardHeader,
   CardTitle,
-} from '@/components/ui/card';
+} from './ui/card';
 
 interface IAppSettings {
   searchApiProvider: string;
@@ -42,6 +42,17 @@ const SettingsDialog: React.FC<SettingsDialogProps> = ({ isOpen, onClose }) => {
   const [llmApiKey, setLlmApiKey] = useState<string>('');
   const [llmModelName, setLlmModelName] = useState<string>('');
 
+  // Define available models - in a real app, this might come from a config or API
+  const ALL_MODELS = React.useMemo(() => [ // Wrapped in useMemo for stability if deps are added
+    { id: 'gemini-pro', name: 'Gemini Pro', provider: 'google' },
+    { id: 'gemini-1.5-pro-latest', name: 'Gemini 1.5 Pro Latest', provider: 'google' },
+    { id: 'gpt-3.5-turbo', name: 'GPT-3.5 Turbo', provider: 'custom' }, // Example for custom
+    { id: 'claude-3-opus-20240229', name: 'Claude 3 Opus', provider: 'custom' }, // Example for custom
+  ], []);
+
+
+  const [availableLlmModels, setAvailableLlmModels] = useState(ALL_MODELS);
+
   const loadSettings = useCallback(() => {
     const storedSettings = localStorage.getItem('appSettings');
     if (storedSettings) {
@@ -59,6 +70,27 @@ const SettingsDialog: React.FC<SettingsDialogProps> = ({ isOpen, onClose }) => {
   useEffect(() => {
     loadSettings();
   }, [loadSettings]);
+
+  useEffect(() => {
+    // Filter models based on provider
+    const filtered = ALL_MODELS.filter(model => model.provider === llmProvider);
+    setAvailableLlmModels(filtered);
+
+    if (llmProvider !== 'custom' && filtered.length > 0 && !filtered.find(m => m.id === llmModelName)) {
+      setLlmModelName(filtered[0].id); 
+    } else if (llmProvider !== 'custom' && filtered.length === 0) {
+      setLlmModelName(''); 
+    }
+    
+    if (llmProvider !== 'google' && llmModelName.startsWith('gemini')) {
+        if (llmProvider === 'custom') {
+            // For custom, allow user to edit/replace.
+        } else {
+             setLlmModelName(''); 
+        }
+    }
+
+  }, [llmProvider, llmModelName, ALL_MODELS]); // Added ALL_MODELS to deps
 
   const saveSettings = () => {
     const settings: IAppSettings = {
@@ -140,6 +172,30 @@ const SettingsDialog: React.FC<SettingsDialogProps> = ({ isOpen, onClose }) => {
               </SelectContent>
             </Select>
           </div>
+
+          {/* LLM Model Name Selection */}
+          {llmProvider === 'google' && (
+            <div className="space-y-2">
+              <Label htmlFor="llm-model-name-select">LLM Model Name</Label>
+              <Select
+                value={llmModelName}
+                onValueChange={(value) => setLlmModelName(value)}
+              >
+                <SelectTrigger id="llm-model-name-select">
+                  <SelectValue placeholder="Select Google LLM model" />
+                </SelectTrigger>
+                <SelectContent>
+                  {availableLlmModels
+                    .filter(model => model.provider === 'google')
+                    .map(model => (
+                      <SelectItem key={model.id} value={model.id}>
+                        {model.name}
+                      </SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
 
           {llmProvider === 'custom' && (
             <>
