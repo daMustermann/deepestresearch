@@ -16,6 +16,9 @@ from agent.state import (
     WebSearchState,
 )
 from agent.configuration import Configuration
+from typing import Optional
+from langchain_openai import ChatOpenAI
+from agent.search_tools import brave_search, searxng_search, SearchResults, SearchResultItem
 from agent.prompts import (
     get_current_date,
     query_writer_instructions,
@@ -42,10 +45,10 @@ genai_client = Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 # Nodes
 def generate_query(state: OverallState, config: RunnableConfig) -> QueryGenerationState:
-    """LangGraph node that generates a search queries based on the User's question.
+    """LangGraph node that generates search queries based on the User's question.
 
-    Uses Gemini 2.0 Flash to create an optimized search query for web research based on
-    the User's question.
+    Uses the configured LLM (e.g., a Google Gemini model by default, if Google is the provider)
+    to create optimized search queries for web research based on the User's question.
 
     Args:
         state: Current graph state containing the User's question
@@ -60,13 +63,31 @@ def generate_query(state: OverallState, config: RunnableConfig) -> QueryGenerati
     if state.get("initial_search_query_count") is None:
         state["initial_search_query_count"] = configurable.number_of_initial_queries
 
-    # init Gemini 2.0 Flash
-    llm = ChatGoogleGenerativeAI(
-        model=configurable.query_generator_model,
-        temperature=1.0,
-        max_retries=2,
-        api_key=os.getenv("GEMINI_API_KEY"),
-    )
+    # Initialize the LLM based on the provider configuration
+    if configurable.llm_provider == "custom":
+        if not configurable.llm_api_base_url:
+            raise ValueError("LLM_API_BASE_URL must be set for custom LLM provider.")
+        llm = ChatOpenAI(
+            model_name=configurable.llm_model_name or "gpt-3.5-turbo", # Default model for custom
+            openai_api_base=configurable.llm_api_base_url,
+            openai_api_key=configurable.llm_api_key if configurable.llm_api_key else None,
+            temperature=1.0,
+            max_retries=2,
+        )
+    elif configurable.llm_provider == "openai":
+        llm = ChatOpenAI(
+            model_name=configurable.llm_model_name or "gpt-3.5-turbo", # Default model for openai
+            openai_api_key=configurable.llm_api_key or os.getenv("OPENAI_API_KEY"),
+            temperature=1.0,
+            max_retries=2,
+        )
+    else: # Default to google
+        llm = ChatGoogleGenerativeAI(
+            model=configurable.query_generator_model,
+            temperature=1.0,
+            max_retries=2,
+            api_key=os.getenv("GEMINI_API_KEY") if configurable.llm_provider == "google" else None,
+        )
     structured_llm = llm.with_structured_output(SearchQueryList)
 
     # Format the prompt
@@ -93,46 +114,85 @@ def continue_to_web_research(state: QueryGenerationState):
 
 
 def web_research(state: WebSearchState, config: RunnableConfig) -> OverallState:
-    """LangGraph node that performs web research using the native Google Search API tool.
+    """LangGraph node that performs web research using the configured search provider.
 
-    Executes a web search using the native Google Search API tool in combination with Gemini 2.0 Flash.
+    If Google is the search provider, it executes a web search using the native Google Search
+    API tool in combination with the configured Google LLM (e.g., Gemini model).
+    For other providers like Brave or SearxNG, it uses their respective APIs.
 
     Args:
         state: Current graph state containing the search query and research loop count
-        config: Configuration for the runnable, including search API settings
+        config: Configuration for the runnable, including search API and LLM settings
 
     Returns:
         Dictionary with state update, including sources_gathered, research_loop_count, and web_research_results
     """
     # Configure
     configurable = Configuration.from_runnable_config(config)
-    formatted_prompt = web_searcher_instructions.format(
-        current_date=get_current_date(),
-        research_topic=state["search_query"],
-    )
 
-    # Uses the google genai client as the langchain client doesn't return grounding metadata
-    response = genai_client.models.generate_content(
-        model=configurable.query_generator_model,
-        contents=formatted_prompt,
-        config={
-            "tools": [{"google_search": {}}],
-            "temperature": 0,
-        },
-    )
-    # resolve the urls to short urls for saving tokens and time
-    resolved_urls = resolve_urls(
-        response.candidates[0].grounding_metadata.grounding_chunks, state["id"]
-    )
-    # Gets the citations and adds them to the generated text
-    citations = get_citations(response, resolved_urls)
-    modified_text = insert_citation_markers(response.text, citations)
-    sources_gathered = [item for citation in citations for item in citation["segments"]]
+    web_research_outputs = []
+    sources_gathered_outputs = []
+    search_query_for_output = [state["search_query"]]
+
+
+    if configurable.search_api_provider == "brave":
+        if not configurable.search_api_key:
+            raise ValueError("SEARCH_API_KEY must be set for Brave Search.")
+        search_results_obj = brave_search(state["search_query"], configurable.search_api_key)
+    elif configurable.search_api_provider == "searxng":
+        if not configurable.searxng_base_url:
+            raise ValueError("SEARXNG_BASE_URL must be set for SearxNG.")
+        search_results_obj = searxng_search(state["search_query"], configurable.searxng_base_url)
+    elif configurable.search_api_provider == "google":
+        formatted_prompt = web_searcher_instructions.format(
+            current_date=get_current_date(),
+            research_topic=state["search_query"],
+        )
+        # Uses the google genai client as the langchain client doesn't return grounding metadata
+        response = genai_client.models.generate_content(
+            model=configurable.query_generator_model, # This model is used for summarization with Google Search
+            contents=formatted_prompt,
+            config={
+                "tools": [{"google_search": {}}],
+                "temperature": 0,
+            },
+        )
+        # resolve the urls to short urls for saving tokens and time
+        resolved_urls = resolve_urls(
+            response.candidates[0].grounding_metadata.grounding_chunks, state["id"]
+        )
+        # Gets the citations and adds them to the generated text
+        citations = get_citations(response, resolved_urls)
+        modified_text = insert_citation_markers(response.text, citations)
+        current_sources_gathered = [item for citation in citations for item in citation["segments"]]
+
+        web_research_outputs.append(modified_text)
+        sources_gathered_outputs.extend(current_sources_gathered)
+        search_results_obj = None # To skip the next block
+    else:
+        raise ValueError(f"Unsupported search API provider: {configurable.search_api_provider}")
+
+    if configurable.search_api_provider != "google" and search_results_obj and search_results_obj.results:
+        combined_snippets = []
+        for i, res in enumerate(search_results_obj.results):
+            combined_snippets.append(f"[{i+1}] {res.title}\n{res.snippet}\nURL: {res.url}")
+            # Adapt to the expected sources_gathered structure
+            sources_gathered_outputs.append({
+                "id": f"{state['id']}_{i}",
+                "title": res.title,
+                "url": res.url,
+                "value": res.url,
+                "short_url": res.url,
+                "segments": [{"text": res.snippet or "", "url": res.url, "title": res.title }]
+            })
+        web_research_outputs.append("\n\n---\n\n".join(combined_snippets))
+    elif configurable.search_api_provider != "google" and (not search_results_obj or not search_results_obj.results):
+        web_research_outputs.append("No results found or error in search.")
 
     return {
-        "sources_gathered": sources_gathered,
-        "search_query": [state["search_query"]],
-        "web_research_result": [modified_text],
+        "sources_gathered": sources_gathered_outputs,
+        "search_query": search_query_for_output,
+        "web_research_result": web_research_outputs,
     }
 
 
@@ -153,7 +213,19 @@ def reflection(state: OverallState, config: RunnableConfig) -> ReflectionState:
     configurable = Configuration.from_runnable_config(config)
     # Increment the research loop count and get the reasoning model
     state["research_loop_count"] = state.get("research_loop_count", 0) + 1
-    reasoning_model = state.get("reasoning_model") or configurable.reasoning_model
+    # The 'reasoning_model' from state is a string like "gemini-1.5-flash" passed from frontend.
+    # This will be used as 'configurable.reflection_model' if not overridden by llm_model_name for custom/openai.
+    reasoning_model_name_from_state = state.get("reasoning_model")
+
+    # Determine the actual model to use for reflection
+    # For Google, configurable.reflection_model (derived from Configuration defaults) is used.
+    # For custom/OpenAI, configurable.llm_model_name takes precedence, then configurable.reflection_model.
+    effective_reflection_model = configurable.reflection_model
+    if configurable.llm_provider in ["custom", "openai"] and configurable.llm_model_name:
+        effective_reflection_model = configurable.llm_model_name
+    elif reasoning_model_name_from_state and configurable.llm_provider == "google": # if user chose specific model for this run with google
+        effective_reflection_model = reasoning_model_name_from_state
+
 
     # Format the prompt
     current_date = get_current_date()
@@ -162,13 +234,31 @@ def reflection(state: OverallState, config: RunnableConfig) -> ReflectionState:
         research_topic=get_research_topic(state["messages"]),
         summaries="\n\n---\n\n".join(state["web_research_result"]),
     )
-    # init Reasoning Model
-    llm = ChatGoogleGenerativeAI(
-        model=reasoning_model,
-        temperature=1.0,
-        max_retries=2,
-        api_key=os.getenv("GEMINI_API_KEY"),
-    )
+    # Initialize the LLM for reflection
+    if configurable.llm_provider == "custom":
+        if not configurable.llm_api_base_url:
+            raise ValueError("LLM_API_BASE_URL must be set for custom LLM provider.")
+        llm = ChatOpenAI(
+            model_name=effective_reflection_model,
+            openai_api_base=configurable.llm_api_base_url,
+            openai_api_key=configurable.llm_api_key if configurable.llm_api_key else None,
+            temperature=1.0,
+            max_retries=2,
+        )
+    elif configurable.llm_provider == "openai":
+        llm = ChatOpenAI(
+            model_name=effective_reflection_model,
+            openai_api_key=configurable.llm_api_key or os.getenv("OPENAI_API_KEY"),
+            temperature=1.0,
+            max_retries=2,
+        )
+    else: # Default to google
+        llm = ChatGoogleGenerativeAI(
+            model=effective_reflection_model,
+            temperature=1.0,
+            max_retries=2,
+            api_key=os.getenv("GEMINI_API_KEY") if configurable.llm_provider == "google" else None,
+        )
     result = llm.with_structured_output(Reflection).invoke(formatted_prompt)
 
     return {
@@ -231,7 +321,18 @@ def finalize_answer(state: OverallState, config: RunnableConfig):
         Dictionary with state update, including running_summary key containing the formatted final summary with sources
     """
     configurable = Configuration.from_runnable_config(config)
-    reasoning_model = state.get("reasoning_model") or configurable.reasoning_model
+    # Determine the model for finalizing the answer.
+    # For Google, it's configurable.answer_model.
+    # For custom/OpenAI, configurable.llm_model_name takes precedence, then configurable.answer_model.
+    # The reasoning_model from state (user's choice for the run) can also be considered for Google.
+    reasoning_model_name_from_state = state.get("reasoning_model")
+
+    effective_answer_model = configurable.answer_model # Default from Configuration object
+    if configurable.llm_provider in ["custom", "openai"] and configurable.llm_model_name:
+        effective_answer_model = configurable.llm_model_name
+    elif reasoning_model_name_from_state and configurable.llm_provider == "google":
+         effective_answer_model = reasoning_model_name_from_state
+
 
     # Format the prompt
     current_date = get_current_date()
@@ -241,13 +342,35 @@ def finalize_answer(state: OverallState, config: RunnableConfig):
         summaries="\n---\n\n".join(state["web_research_result"]),
     )
 
-    # init Reasoning Model, default to Gemini 2.5 Flash
-    llm = ChatGoogleGenerativeAI(
-        model=reasoning_model,
-        temperature=0,
-        max_retries=2,
-        api_key=os.getenv("GEMINI_API_KEY"),
-    )
+    # Initialize the LLM for finalizing the answer
+    if configurable.llm_provider == "custom":
+        if not configurable.llm_api_base_url:
+            raise ValueError("LLM_API_BASE_URL must be set for custom LLM provider.")
+        llm = ChatOpenAI(
+            model_name=effective_answer_model,
+            openai_api_base=configurable.llm_api_base_url,
+            openai_api_key=configurable.llm_api_key if configurable.llm_api_key else None,
+            temperature=0,
+            max_retries=2,
+        )
+    elif configurable.llm_provider == "openai":
+        final_model_name = configurable.llm_model_name or configurable.answer_model
+        llm = ChatOpenAI(
+            model_name=effective_answer_model,
+            openai_api_key=configurable.llm_api_key or os.getenv("OPENAI_API_KEY"),
+            temperature=0,
+            max_retries=2,
+        )
+    else: # Default to google
+        # The original code used `reasoning_model` which was set to `configurable.reflection_model`
+        # or `configurable.answer_model` if that was also a config.
+        # For Google, we should use the specific answer_model from the config.
+        llm = ChatGoogleGenerativeAI(
+            model=effective_answer_model,
+            temperature=0,
+            max_retries=2,
+            api_key=os.getenv("GEMINI_API_KEY") if configurable.llm_provider == "google" else None,
+        )
     result = llm.invoke(formatted_prompt)
 
     # Replace the short urls with the original urls and add all used urls to the sources_gathered
